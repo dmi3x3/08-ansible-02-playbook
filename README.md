@@ -1,14 +1,18 @@
-# Домашнее задание к занятию "08.02 Работа с Playbook"
+# Домашнее задание к занятию "08.03 Использование Yandex Cloud"
 
 ## Подготовка к выполнению
 
-1. Создайте свой собственный (или используйте старый) публичный репозиторий на github с произвольным именем.
-2. Скачайте [playbook](./playbook/) из репозитория с домашним заданием и перенесите его в свой репозиторий.
-3. Подготовьте хосты в соответствии с группами из предподготовленного playbook.
+1. Подготовьте в Yandex Cloud три хоста: для `clickhouse`, для `vector` и для `lighthouse`.
+
+Ссылка на репозиторий LightHouse: https://github.com/VKCOM/lighthouse
 
 ## Основная часть
 
-1. Приготовьте свой собственный inventory файл `prod.yml`.
+1. Допишите playbook: нужно сделать ещё один play, который устанавливает и настраивает lighthouse.
+2. При создании tasks рекомендую использовать модули: `get_url`, `template`, `yum`, `apt`.
+3. Tasks должны: скачать статику lighthouse, установить nginx или любой другой webserver, настроить его конфиг для открытия lighthouse, запустить webserver.
+4. Приготовьте свой собственный inventory файл `prod.yml`.
+
 ```yaml
 ---
 clickhouse:
@@ -19,106 +23,52 @@ vector:
   hosts:
     vector-01:
       ansible_host: root@centos7-n
-
+lighthouse:
+  hosts:
+    lighthouse-01:
+      ansible_host: root@centos7-n
 ```
-2. Допишите playbook: нужно сделать ещё один play, который устанавливает и настраивает [vector](https://vector.dev).
-3. При создании tasks рекомендую использовать модули: `get_url`, `template`, `unarchive`, `file`.
-4. Tasks должны: скачать нужной версии дистрибутив, выполнить распаковку в выбранную директорию, установить vector.
+
 5. Запустите `ansible-lint site.yml` и исправьте ошибки, если они есть.
+
+```shell
+08-ansible-03-yandex$ ansible-lint site.yml
+WARNING  Overriding detected file kind 'yaml' with 'playbook' for given positional argument: site.yml
+```
+
 6. Попробуйте запустить playbook на этом окружении с флагом `--check`.
 7. Запустите playbook на `prod.yml` окружении с флагом `--diff`. Убедитесь, что изменения на системе произведены.
+
+В play для lighthouse назначал права на каталог после задачи git clone (в процессе чего каталог и появлялся) и не понимал, почему в этом play всегда одно изменение, оказалось, что git clone запускается с от root, и каждый запуск меняет права на клонированную директорию,
+для решения этой проблемы перенес назначение прав на каталог уровнем выше (в ту папку, куда происходит клонирование) и саму задачу поставил до клонирования. А его запустил от пользователя nginx, с помощью опции become_user: nginx. 
+В play для clickhouse для задачи "Create table {{ clickhouse_table4logs }}.logs" добавил параметр changed_when: create_table.rc != 0 т.о. при успешном завершении задачи он считается не измененной, считаю это нормальным, т.к. в sql запросе на создание таблицы из этого файла используется конструкция CREATE TABLE IF NOT EXISTS, которая не допустит ошибки если таблица уже существует.
+
 8. Повторно запустите playbook с флагом `--diff` и убедитесь, что playbook идемпотентен.
 9. Подготовьте README.md файл по своему playbook. В нём должно быть описано: что делает playbook, какие у него есть параметры и теги.
 
+т.к. занный playbook является доработкой предыдущего ДЗ, расскажу только про новые сущности. Появился тег ligthouse, которым маркированы две новые задачи. Первая устанавливает nginx, вторая lighthouse.
+Весь плейбук претерпел некоторые изменения, связанные с возможностью запуска его для нескольких разных хостов. Для этого пришлось добавить возможность получать ip адреса хостов и прописывать их в конфиги перекрестно. Например в задаче для vector получить ip хоста с clickhouse, это обеспечивает конструкция:
 
-### Playbook содержит два play
-
-- Install Clickhouse - содержит handler и tasks, необходимые для установки Clickhouse
-- Install Vector - содержит tasks, необходимые для установки Vector
-
-Краткая структура файла с пояснениями:
-- name: Install Clickhouse <span style="color:green"> -- начало play с установкой Clickhouse</span>
-
-  handlers: <span style="color:green"> -- В этом разделе записываются задачи, выполнять которые требуется, если какая либо задача произвела изменение и сообщила об этом</span>
-    - name: Start clickhouse service <span style="color:green"> -- Здесь выполняется перезагрузка установленного Clickhouse </span>
-  tasks: <span style="color:green"> -- В этом разделе записываются основные задачи для play "Install Clickhouse"</span>
-      tags: clickhouse <span style="color:green"> -- тег, позволяющий ansible выполнять только помеченные тегом задачи </span>
-    - block: <span style="color:green"> -- Этот модуль объединяет две задачи, если первая завершится с ошибкой, запустится вторая - rescue</span>
-        - name: Get clickhouse distrib <span style="color:green"> -- Получение дистрибутива</span>
-
-          register: res_sc <span style="color:green"> -- регистрация в переменную фактов работы модуля</span>
-        - name: Get clickhouse distrib <span style="color:green"> -- Получение дистрибутива, если в предыдущей задаче возникла ошибка</span>
-      
-      tags: clickhouse <span style="color:green"> -- тег, позволяющий ansible выполнять только помеченные тегом задачи</span>
-    - name: Install clickhouse packages <span style="color:green"> -- Установка Clickhouse с помощью модуля yum</span>
-  
-      notify: Start clickhouse service <span style="color:green"> -- Сообщение модуля, с именем handler'а, который надо запустить, если были произведены изменения</span>
-
-      tags: clickhouse <span style="color:green"> -- тег, позволяющий ansible выполнять только помеченные тегом задачи</span>
-
-    - name: Remove clickhouse packages distribs <span style="color:green"> -- Удаление файлов с дистрибутивом</span>
-
-      tags: [for_delete, never] <span style="color:green"> -- тег, позволяющий ansible выполнять только помеченные тегом задачи</span>
-
-  post_tasks: <span style="color:green"> -- В этом разделе записываются дополнительные задачи, выполнять которые требубуется после работы tasks и срабатывания ее handlers</span>
-    - name: Create database <span style="color:green"> -- Создание БД Clickhouse</span>
-      
-      tags: clickhouse <span style="color:green"> -- тег, позволяющий ansible выполнять только помеченные тегом задачи</span>
-  
-  tasks: <span style="color:green"> -- В этом разделе записываются основные задачи для play "Install Vector"</span>
-    - name: Install Vector<span style="color:green"> -- начало play с установкой Vector</span>
-    - name: Create directrory for vector "{{ vector_dir }}" <span style="color:green"> -- Создание каталога для установки в него Vector</span>
-      
-      tags: vector <span style="color:green"> -- тег, позволяющий ansible выполнять только помеченные тегом задачи</span>
-    - name: Get vector distrib <span style="color:green"> -- </span>
-    - name: Extract vector in the installation directory <span style="color:green"> -- Разархивирование дистрибутива Vector в каталог установки</span>
-      
-      tags: vector <span style="color:green"> -- тег, позволяющий ansible выполнять только помеченные тегом задачи</span>
-    
-    - name: Remove vector packages distribs <span style="color:green"> -- Удаление архива с дистрибутивом</span>
-      tags: [for_delete, never] <span style="color:green"> -- тег, позволяющий ansible выполнять только помеченные тегом задачи</span>
-
-
-Для работы playbook требуется выполнить команду:
-```shell
-ansible-playbook -i inventory/prod.yml site.yml
-```
-если добавить к команде --tags clickhouse - будут выполнены все задачи, относящиеся к Clichouse,
-если добавить к команде --tags vector - будут выполнены все задачи, относящиеся к Vector.
-опция --tags 'never, for_delete' выполнит задачи, производящие удаление файлов с дистрибутивами.
-В случае с clickhouse можно это сделать двумя способами: 
-- собрать имя из переменных так же, как при скачивании.
 ```yaml
-    - name: Remove clickhouse packages distribs variant 2
-      ansible.builtin.file:
-        path: './{{ item.0 }}-{{ item.1 }}.rpm'
-        state: absent
-      with_nested:
-        - "{{ clickhouse_packages }}"
-        - "{{ clickhouse_version }}"
-      tags:
-        - for_delete
-        - never
-```
-- зарегистрировать факты работы модуля скачивания ansible.builtin.get_url
-и получить требуемые имена файлов оттуда. Этот вариант предсталяется мне более логичным, что скачали, то и удалили.
-Правда в реализации есть нюанс: факты регистрируются только в первой задаче, несмотря на то, что в ней не все файлы могут быть скачены, имена соответствующих файлов одинаковые в основной и rescue тасках. 
-```yaml
-    - name: Remove clickhouse packages distribs
-      ansible.builtin.file:
-        path: "{{ item.dest }}"
-        state: absent
+    - name: Set IP addresd clickhouse
+      set_fact:
+        clickhouse_node_ip: "{{ item }}"
       with_items:
-        - "{{ res_sc.results }}"
-      tags:
-        - for_delete
-        - never
+        - "{{ hostvars['clickhouse-01']['ansible_facts']['default_ipv4']['address'] }}"
+      tags: vector
 ```
 
+Постарался свести к минимуму ручные действия при использовании данного playbook, требуется только прописать ip адреса 3 хостов с centos7 в inventory и он (playbook) настроит и запустит хосты с clickhouse, vector и lighthouse.
+C хоста lighthouse-01 сервис nginx отправляет подготовленные в формате json access логи по протоколу syslog udp на машину с vector. Vector-01 обрабатывает логи выставляет формат полей, некоторые переименовавает, удаляет и отправляет в БД clickhouse, на хост clickhouse-01, записи в котором можно посмотреть из lighthouse.
 
-10. Готовый playbook выложите в свой репозиторий, поставьте тег `08-ansible-02-playbook` на фиксирующий коммит, в ответ предоставьте ссылку на него.
 
-[репозиторий c домашней работой `08-ansible-02-playbook`](https://github.com/dmi3x3/08-ansible-02-playbook/tree/08-ansible-02-playbook)
+10. Готовый playbook выложите в свой репозиторий, поставьте тег `08-ansible-03-yandex` на фиксирующий коммит, в ответ предоставьте ссылку на него.
+
+### [Готовый playbook 08-ansible-03-yandex](https://github.com/dmi3x3/08-ansible-02-playbook/tree/08-ansible-03-yandex) 
+
+
+
+[Предыдущее ДЗ](https://github.com/dmi3x3/08-ansible-02-playbook/tree/08-ansible-02-playbook)
 
 ---
 

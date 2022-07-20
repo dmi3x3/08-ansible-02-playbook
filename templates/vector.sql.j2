@@ -1,0 +1,39 @@
+CREATE TABLE IF NOT EXISTS {{ clickhouse_table4logs }}.logs
+(
+    `node_name` String,
+    `timestamp` DateTime,
+    `server_name` String,
+    `user_id` String,
+    `request_full` String,
+    `request_user_agent` String,
+    `request_http_host` String,
+    `request_uri` String,
+    `request_scheme` String,
+    `request_method` String,
+    `request_length` UInt64,
+    `request_time` Float32,
+    `request_referrer` String,
+    `response_status` UInt16,
+    `response_body_bytes_sent` UInt64,
+    `response_content_type` String,
+    `remote_addr` IPv4,
+    `remote_port` UInt32,
+    `remote_user` String,
+    `upstream_addr` IPv4,
+    `upstream_port` UInt32,
+    `upstream_bytes_received` UInt64,
+    `upstream_bytes_sent` UInt64,
+    `upstream_cache_status` String,
+    `upstream_connect_time` Float32,
+    `upstream_header_time` Float32,
+    `upstream_response_length` UInt64,
+    `upstream_response_time` Float32,
+    `upstream_status` UInt16,
+    `upstream_content_type` String,
+    INDEX idx_http_host request_http_host TYPE set(0) GRANULARITY 1
+)
+ENGINE = MergeTree()
+PARTITION BY toYYYYMMDD(timestamp)
+ORDER BY timestamp
+TTL timestamp + toIntervalMonth(1)
+SETTINGS index_granularity = 8192;

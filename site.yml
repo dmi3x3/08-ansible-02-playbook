@@ -34,6 +34,40 @@
           - clickhouse-common-static-{{ clickhouse_version }}.rpm
           - clickhouse-client-{{ clickhouse_version }}.rpm
           - clickhouse-server-{{ clickhouse_version }}.rpm
+      tags: clickhouse
+
+    - name: Open port for clickhouse
+      become: true
+      firewalld:
+        immediate: true
+        permanent: true
+        port: "{{ item }}"
+        state: enabled
+        zone: home
+      loop:
+        - "8123/tcp"
+        - "9000/tcp"
+      tags: clickhouse
+
+    - name: Create config.xml file
+      become: true
+      become_user: clickhouse
+      template:
+        src: templates/clickhouse_config.xml.j2
+        dest: /etc/clickhouse-server/config.xml
+        mode: 0400
+        backup: true
+      notify: Start clickhouse service
+      tags: clickhouse
+
+    - name: Create users.xml file
+      become: true
+      become_user: clickhouse
+      template:
+        src: templates/clickhouse_users.xml.j2
+        dest: /etc/clickhouse-server/users.xml
+        mode: 0400
+        backup: true
       notify: Start clickhouse service
       tags: clickhouse
 
@@ -62,33 +96,87 @@
         - for_delete
         - never
 
-#    - name: Remove clickhouse packages distribs variant 2
-#      ansible.builtin.file:
-#        path: './{{ item.0 }}-{{ item.1 }}.rpm'
-#        state: absent
-#      with_nested:
-#        - "{{ clickhouse_packages }}"
-#        - "{{ clickhouse_version }}"
-#      tags:
-#        - for_delete
-#        - never
-
   post_tasks:
-    - name: Create database
-      ansible.builtin.command: "clickhouse-client -q 'create database logs;'"
+    - name: Create database {{ clickhouse_table4logs }}
+      ansible.builtin.command: "clickhouse-client -q 'create database {{ clickhouse_table4logs }};'"
       register: create_db
       failed_when: create_db.rc != 0 and create_db.rc !=82
       changed_when: create_db.rc == 0
       tags: clickhouse
 
+    - name: Create vector.sql file
+      become: true
+      template:
+        src: templates/vector.sql.j2
+        dest: /tmp/vector.sql
+        mode: 0644
+        backup: true
+      tags: clickhouse
+
+    - name: "Create table {{ clickhouse_table4logs }}.logs"
+      ansible.builtin.command: 'clickhouse-client -d {{ clickhouse_table4logs }} --queries-file="/tmp/vector.sql" '
+      register: create_table
+      failed_when: create_table.rc != 0
+      changed_when: create_table.rc != 0
+      tags: clickhouse
+
+    - name: Print create table
+      debug:
+        msg: "Создание таблицы: {{ item }}"
+      with_items:
+        - "{{ create_table }}"
+      tags: clickhouse
+
 - name: Install Vector
   hosts: vector
+  handlers:
+    - name: Start vector service
+      become: true
+      ansible.builtin.service:
+        name: vector.service
+        enabled: true
+        state: restarted
+      tags: vector
+
+  pre_tasks:
+    - name: Create group vector
+      ansible.builtin.group:
+        name: vector
+        state: present
+      become: true
+      tags: vector
+
+    - name: Create user vector
+      ansible.builtin.user:
+        name: vector
+        groups: vector
+        shell: /sbin/nologin
+        create_home: false
+        append: true
+        comment: "Vector nologin User"
+        state: present
+      become: true
+      tags: vector
+
+    - name: Set IP addresd clickhouse
+      set_fact:
+        clickhouse_node_ip: "{{ item }}"
+      with_items:
+        - "{{ hostvars['clickhouse-01']['ansible_facts']['default_ipv4']['address'] }}"
+      tags: vector
+
   tasks:
     - name: Create directrory for vector "{{ vector_dir }}"
-      file:
-        path: "{{ vector_dir }}"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        owner: vector
+        group: vector
         mode: 0755
         state: directory
+      with_items:
+        - "{{ vector_dir }}"
+        - "/etc/vector"
+        - "/var/lib/vector"
       tags: vector
 
     - name: Get vector distrib
@@ -102,9 +190,47 @@
         copy: false
         src: "/tmp/vector-{{ vector_version }}-x86_64-unknown-linux-musl.tar.gz"
         dest: "{{ vector_dir }}"
+        creates: false
         extra_opts: ['--strip-components=2']
       tags:
         - vector
+
+    - name: Create a symbolic link vector
+      ansible.builtin.file:
+        src: "{{ vector_dir }}/bin/vector"
+        dest: /usr/bin/vector
+#        owner: vector
+#        group: vector
+        state: link
+      tags: vector
+
+    - name: Create service vector
+      become: true
+      template:
+        src: templates/vector.service.j2
+        dest: /etc/systemd/system/vector.service
+        mode: 0644
+        backup: true
+      tags: vector
+
+    - name: Create default/vector
+      become: true
+      template:
+        src: templates/vector.default.j2
+        dest: /etc/default/vector
+        mode: 0644
+        backup: true
+      tags: vector
+
+    - name: Create vector.toml
+      become: true
+      template:
+        src: templates/vector.toml.j2
+        dest: /etc/vector/vector.toml
+        mode: 0644
+        backup: true
+      notify: Start vector service
+      tags: vector
 
     - name: Remove vector packages distribs
       ansible.builtin.file:
@@ -113,3 +239,115 @@
       tags:
         - for_delete
         - never
+
+
+- name: Install Nginx
+  hosts: lighthouse
+  handlers:
+    - name: Start nginx service
+      become: true
+      ansible.builtin.service:
+        name: nginx.service
+        enabled: true
+        state: restarted
+      tags: lighthouse
+
+  pre_tasks:
+    - name: Set IP addresd vector
+      set_fact:
+        vector_node_ip: "{{ item }}"
+      with_items:
+        - "{{ hostvars['vector-01']['ansible_facts']['default_ipv4']['address'] }}"
+      tags: lighthouse
+
+  tasks:
+    - name: Install epel-release
+      become: true
+      ansible.builtin.yum:
+        name: epel-release
+        state: present
+      tags: lighthouse
+
+    - name: Install nginx
+      become: true
+      ansible.builtin.yum:
+        name: nginx
+        state: present
+      notify: Start nginx service
+      tags: lighthouse
+
+    - name: Create nginx.conf
+      become: true
+      template:
+        src: templates/nginx.conf.j2
+        dest: /etc/nginx/nginx.conf
+        mode: 0644
+        backup: true
+      notify: Start nginx service
+      tags: lighthouse
+
+    - name: Open port for nginx
+      become: true
+      firewalld:
+        permanent: true
+        port: 80/tcp
+        state: enabled
+        zone: public
+      tags: lighthouse
+
+- name: Install Lighthouse
+  hosts: lighthouse
+  handlers:
+    - name: Reload nginx service
+      become: true
+      ansible.builtin.service:
+        name: nginx.service
+        enabled: true
+        state: restarted
+      tags: lighthouse
+
+  pre_tasks:
+    - name: Install git
+      become: true
+      ansible.builtin.yum:
+        name: git
+      tags: lighthouse
+
+    - name: Set owner lighthouse path dir
+      become: true
+      file:
+        path: "{{ lighthouse_path }}"
+        owner: nginx
+        group: nginx
+        recurse: true
+        state: directory
+        access_time: preserve
+        modification_time: preserve
+      tags: lighthouse
+
+  tasks:
+    - name: Git clone lighthouse
+      become: true
+      become_user: nginx
+      git:
+        repo: "{{ lighthouse_git }}"
+        version: "{{ lighthouse_version }}"
+        dest: "{{ lighthouse_path }}{{ lighthouse_dir }}"
+      tags: lighthouse
+
+    - name: Create ligthouse.conf
+      become: true
+      template:
+        src: templates/lighthouse.conf.j2
+        dest: /etc/nginx/conf.d/lighthouse.conf
+        mode: 0644
+      notify: Reload nginx service
+      tags: lighthouse
+
+- name: Print IP1
+  hosts: lighthouse-01
+  tasks:
+    - name: Print IP addresd vector1
+      debug:
+        msg: "Адрес ноды с установленным vector: {{ vector_node_ip }}"
+      tags: lighthouse

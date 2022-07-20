@@ -1,0 +1,135 @@
+data_dir = "/var/lib/vector"
+
+[api]
+  enabled = true
+
+[sources.nginx_input]
+  # REQUIRED - General
+  type = "syslog"
+  mode = "udp"
+  host_key = "host" # default
+  address = "0.0.0.0:11001" # example, no default, relevant when mode = "tcp" or mode = "udp"
+
+[transforms.nginx_parse_json]
+  inputs                        = [ "nginx_input" ]
+  type                          = "json_parser"
+
+[transforms.nginx_parse_add_defaults]
+  inputs                        = [ "nginx_parse_json" ]
+  type                          = "lua"
+  version                       = "2"
+
+  hooks.process = """
+  function (event, emit)
+
+    function split_first(s, delimiter)
+      result = {};
+      for match in (s..delimiter):gmatch("(.-)"..delimiter) do
+          table.insert(result, match);
+      end
+      return result[1];
+    end
+
+    function split_last(s, delimiter)
+      result = {};
+      for match in (s..delimiter):gmatch("(.-)"..delimiter) do
+          table.insert(result, match);
+      end
+      return result[#result];
+    end
+
+    event.log.upstream_addr             = split_first(split_last(event.log.upstream_addr, ', '), ':')
+    event.log.upstream_bytes_received   = split_last(event.log.upstream_bytes_received, ', ')
+    event.log.upstream_bytes_sent       = split_last(event.log.upstream_bytes_sent, ', ')
+    event.log.upstream_connect_time     = split_last(event.log.upstream_connect_time, ', ')
+    event.log.upstream_header_time      = split_last(event.log.upstream_header_time, ', ')
+    event.log.upstream_response_length  = split_last(event.log.upstream_response_length, ', ')
+    event.log.upstream_response_time    = split_last(event.log.upstream_response_time, ', ')
+    event.log.upstream_status           = split_last(event.log.upstream_status, ', ')
+
+    if event.log.upstream_addr == "" then
+        event.log.upstream_addr = "127.0.0.1"
+    end
+
+    if (event.log.upstream_bytes_received == "-" or event.log.upstream_bytes_received == "") then
+        event.log.upstream_bytes_received = "0"
+    end
+
+    if (event.log.upstream_bytes_sent == "-" or event.log.upstream_bytes_sent == "") then
+        event.log.upstream_bytes_sent = "0"
+    end
+
+    if event.log.upstream_cache_status == "" then
+        event.log.upstream_cache_status = "DISABLED"
+    end
+
+    if (event.log.upstream_connect_time == "-" or event.log.upstream_connect_time == "") then
+        event.log.upstream_connect_time = "0"
+    end
+
+    if (event.log.upstream_header_time == "-" or event.log.upstream_header_time == "") then
+        event.log.upstream_header_time = "0"
+    end
+
+    if (event.log.upstream_response_length == "-" or event.log.upstream_response_length == "") then
+        event.log.upstream_response_length = "0"
+    end
+
+    if (event.log.upstream_response_time == "-" or event.log.upstream_response_time == "") then
+        event.log.upstream_response_time = "0"
+    end
+
+    if (event.log.upstream_status == "-" or event.log.upstream_status == "") then
+        event.log.upstream_status = "0"
+    end
+
+    emit(event)
+
+  end
+  """
+
+[transforms.nginx_parse_remove_fields]
+    inputs                              = [ "nginx_parse_add_defaults" ]
+    type                                = "remove_fields"
+    fields                              = ["appname", "facility", "host", "hostname", "data", "file", "host", "source_type", "severity", "source_ip"]
+
+[transforms.nginx_parse_coercer]
+
+    type                                = "coercer"
+    inputs                              = ["nginx_parse_remove_fields"]
+
+    types.request_length = "int"
+    types.request_time = "float"
+
+    types.response_status = "int"
+    types.response_body_bytes_sent = "int"
+
+    types.remote_port = "int"
+
+    types.upstream_bytes_received = "int"
+    types.upstream_bytes_send = "int"
+    types.upstream_connect_time = "float"
+    types.upstream_header_time = "float"
+    types.upstream_response_length = "int"
+    types.upstream_response_time = "float"
+    types.upstream_status = "int"
+
+    types.timestamp = "timestamp"
+
+[sinks.nginx_output_clickhouse]
+    inputs   = ["nginx_parse_coercer"]
+    type     = "clickhouse"
+
+    database = "{{ clickhouse_table4logs }}"
+    healthcheck = true
+    host = "http://{{ clickhouse_node_ip }}:8123" #  Адрес Clickhouse
+    table = "{{ clickhouse_table4logs }}"
+
+    encoding.timestamp_format = "unix"
+
+    buffer.type = "disk"
+    buffer.max_size = 134217728
+    buffer.when_full = "block"
+
+    request.in_flight_limit = 20
+

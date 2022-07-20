@@ -7,3 +7,7 @@ vector:
   hosts:
     vector-01:
       ansible_host: root@centos7-n
+lighthouse:
+  hosts:
+    lighthouse-01:
+      ansible_host: root@centos7-n
